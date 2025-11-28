@@ -1,4 +1,6 @@
-import os, json, time, sys, datetime as dt
+import os, json, time, sys, datetime as dt, logging
+from uuid import UUID
+from pydantic import BaseModel, Field, ValidationError
 from confluent_kafka import Consumer, Producer
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
@@ -12,6 +14,14 @@ from convai_narrative_memory_poc.workers.common.utils import (
 
 TOP_IN = "anchors-write"
 TOP_OUT = "anchors-indexed"
+
+
+class Anchor(BaseModel):
+    anchor_id: UUID
+    text: str = Field(..., min_length=1, max_length=10000)
+    stored_at: dt.datetime
+    salience: float = Field(default=1.0, ge=0.3, le=2.5)
+    meta: dict = Field(default_factory=dict)
 
 
 def ensure_collection(client: QdrantClient):
@@ -53,11 +63,44 @@ def anchor_exists(client: QdrantClient, anchor_id: str) -> bool:
         )
         return bool(existing)
     except Exception as e:
-        print(
-            f"[indexer] failed to check existing anchor {anchor_id}: {e}",
-            file=sys.stderr,
-        )
+        logging.error(f"failed to check existing anchor {anchor_id}: {e}")
         return False
+
+
+def process_anchor(
+    anchor: Anchor,
+    client: QdrantClient,
+    get_embedding_fn=get_embedding,
+) -> dict:
+    """Process a single anchor payload. Returns result dict."""
+    anchor_id_str = str(anchor.anchor_id)
+    if anchor_exists(client, anchor_id_str):
+        return {
+            "anchor_id": anchor_id_str,
+            "ok": False,
+            "reason": "anchor_immutable_violation",
+            "detail": "Anchor already exists; skipping write",
+        }
+
+    embedding = get_embedding_fn(anchor.text)
+    client.upsert(
+        collection_name=QDRANT_COLLECTION,
+        wait=True,
+        points=[
+            models.PointStruct(
+                id=anchor_id_str,
+                vector=embedding,
+                payload={
+                    "text": anchor.text,
+                    "stored_at": anchor.stored_at.isoformat(),
+                    "salience": anchor.salience,
+                    "meta": anchor.meta,
+                },
+            )
+        ],
+    )
+
+    return {"anchor_id": anchor_id_str, "ok": True}
 
 
 def main():
@@ -80,48 +123,36 @@ def main():
         if msg.error():
             print(f"[indexer] error: {msg.error()}", file=sys.stderr)
             continue
+        
+        payload_str = msg.value().decode("utf-8")
         try:
-            payload = json.loads(msg.value().decode("utf-8"))
-            anchor_id = payload.get("anchor_id")
-            text = payload["text"]
-            stored_at = payload["stored_at"]
-            meta = payload.get("meta", {})
-            salience = float(payload.get("salience", 1.0))
-            if anchor_exists(client, anchor_id):
-                warn_msg = {
-                    "anchor_id": anchor_id,
-                    "ok": False,
-                    "reason": "anchor_immutable_violation",
-                    "detail": "Anchor already exists; skipping write",
-                }
-                producer.produce(TOP_OUT, json.dumps(warn_msg).encode("utf-8"))
-                producer.flush()
+            payload = json.loads(payload_str)
+            anchor = Anchor.model_validate(payload)
+            result = process_anchor(anchor, client, get_embedding)
+
+            # Publish result
+            producer.produce(TOP_OUT, json.dumps(result).encode("utf-8"))
+            producer.flush()
+
+            if result["ok"]:
+                print(f"[indexer] indexed {result['anchor_id']}")
+            else:
                 print(
-                    f"[indexer] WARNING: anchor {anchor_id} already exists, skipping",
+                    f"[indexer] WARNING: {result['reason']} for anchor {result['anchor_id']}",
                     file=sys.stderr,
                 )
-                continue
-            embedding = get_embedding(text)
-            client.upsert(
-                collection_name=QDRANT_COLLECTION,
-                wait=True,
-                points=[
-                    models.PointStruct(
-                        id=anchor_id,
-                        vector=embedding,
-                        payload={
-                            "text": text,
-                            "stored_at": stored_at,
-                            "salience": salience,
-                            "meta": meta,
-                        },
-                    )
-                ],
-            )
-            out = {"anchor_id": anchor_id, "ok": True}
-            producer.produce(TOP_OUT, json.dumps(out).encode("utf-8"))
+        except ValidationError as e:
+            payload = json.loads(payload_str)
+            error_msg = {
+                "anchor_id": payload.get("anchor_id", "unknown"),
+                "ok": False,
+                "reason": "validation_failed",
+                "errors": e.errors(),
+            }
+            producer.produce(TOP_OUT, json.dumps(error_msg).encode("utf-8"))
             producer.flush()
-            print(f"[indexer] indexed {anchor_id}")
+            print(f"[indexer] Validation failed for anchor {payload.get('anchor_id', 'unknown')}: {e.errors()}", file=sys.stderr)
+            continue
         except Exception as e:
             print(f"[indexer] exception: {e}", file=sys.stderr)
     consumer.close()

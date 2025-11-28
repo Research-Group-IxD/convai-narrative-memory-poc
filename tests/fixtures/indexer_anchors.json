@@ -1,0 +1,67 @@
+{
+  "valid_anchors": [
+    {
+      "anchor_id": "550e8400-e29b-41d4-a716-446655440000",
+      "text": "We demoed the Virtual Human system to 12 Fontys colleagues in R10",
+      "stored_at": "2025-11-21T10:00:00Z",
+      "salience": 1.5,
+      "meta": {
+        "tags": ["demo", "fontys"],
+        "session": "session-123",
+        "location": "R10"
+      }
+    },
+    {
+      "anchor_id": "660e8400-e29b-41d4-a716-446655440001",
+      "text": "System outage affecting 50+ users",
+      "stored_at": "2025-10-01T14:30:00Z",
+      "salience": 2.5,
+      "meta": {
+        "tags": ["outage", "critical"],
+        "type": "incident"
+      }
+    }
+  ],
+  "invalid_anchors": [
+    {
+      "description": "Missing anchor_id",
+      "anchor": {
+        "text": "Test anchor",
+        "stored_at": "2025-11-21T10:00:00Z"
+      }
+    },
+    {
+      "description": "Missing text",
+      "anchor": {
+        "anchor_id": "770e8400-e29b-41d4-a716-446655440002",
+        "stored_at": "2025-11-21T10:00:00Z"
+      }
+    },
+    {
+      "description": "Empty text",
+      "anchor": {
+        "anchor_id": "880e8400-e29b-41d4-a716-446655440003",
+        "text": "",
+        "stored_at": "2025-11-21T10:00:00Z"
+      }
+    },
+    {
+      "description": "Invalid salience (too high)",
+      "anchor": {
+        "anchor_id": "990e8400-e29b-41d4-a716-446655440004",
+        "text": "Test anchor",
+        "stored_at": "2025-11-21T10:00:00Z",
+        "salience": 5.0
+      }
+    },
+    {
+      "description": "Invalid timestamp",
+      "anchor": {
+        "anchor_id": "aa0e8400-e29b-41d4-a716-446655440005",
+        "text": "Test anchor",
+        "stored_at": "not-a-date"
+      }
+    }
+  ]
+}
+

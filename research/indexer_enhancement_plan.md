@@ -37,7 +37,7 @@
 
 ❌ **Emotion detection**: Automatische detectie van emotie bij anchor creation  
 ❌ **Automatic salience calculation**: Salience wordt nu handmatig gegeven  
-❌ **Input validation**: Geen validatie van anchor data (text length, salience range, etc.)  
+✅ **Input validation**: Geïmplementeerd met Pydantic voor robuuste validatie (was ❌)
 ❌ **Batch processing**: Verwerkt één anchor per keer (inefficiënt bij hoge load)  
 ❌ **Multi-agent support**: Geen `agent_id` in metadata handling  
 ❌ **Metrics/monitoring**: Geen metrics over processing time, success rate, etc.  
@@ -178,76 +178,40 @@ if salience is None or salience == 1.0:  # Default or not provided
     salience = calculate_salience(text, emotion)
 ```
 
-### 3. Input Validation (Priority: HIGH)
+### 3. Input Validation (Priority: HIGH) - ✅ COMPLETED
 
-**Wat het moet doen:**
-- Valideert anchor data voordat processing
-- Voorkomt invalid data in Qdrant
-- Geeft duidelijke error messages
+**Wat het doet:**
+- Valideert anchor data met Pydantic voordat processing start.
+- Voorkomt automatisch invalid data in Qdrant.
+- Geeft duidelijke, gestructureerde error messages bij validatiefouten.
 
 **Implementatie:**
+De validatie wordt nu direct afgehandeld door een Pydantic `BaseModel`. Dit is robuuster en onderhoudbaarder dan een handmatige validatiefunctie.
+
 ```python
-def validate_anchor(payload: dict) -> tuple[bool, list[str]]:
-    """Validate anchor payload, return (is_valid, errors)"""
-    errors = []
-    
-    # Required fields
-    if not payload.get("anchor_id"):
-        errors.append("Missing anchor_id")
-    if not payload.get("text"):
-        errors.append("Missing text")
-    if not payload.get("stored_at"):
-        errors.append("Missing stored_at")
-    
-    # Text validation
-    text = payload.get("text", "")
-    if len(text) == 0:
-        errors.append("Text is empty")
-    if len(text) > 10000:  # Reasonable limit
-        errors.append(f"Text too long: {len(text)} characters (max 10000)")
-    
-    # Salience validation
-    salience = payload.get("salience", 1.0)
-    try:
-        salience = float(salience)
-        if not (0.3 <= salience <= 2.5):
-            errors.append(f"Salience out of range: {salience} (must be 0.3-2.5)")
-    except (ValueError, TypeError):
-        errors.append(f"Invalid salience: {salience}")
-    
-    # Timestamp validation
-    stored_at = payload.get("stored_at")
-    try:
-        dt.datetime.fromisoformat(stored_at.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
-        errors.append(f"Invalid stored_at format: {stored_at}")
-    
-    # Anchor ID format (should be UUID)
-    anchor_id = payload.get("anchor_id")
-    try:
-        uuid.UUID(anchor_id)
-    except (ValueError, TypeError):
-        errors.append(f"Invalid anchor_id format: {anchor_id}")
-    
-    return len(errors) == 0, errors
+# In main.py
+from pydantic import BaseModel, Field, ValidationError
+from uuid import UUID
+import datetime as dt
+
+class Anchor(BaseModel):
+    anchor_id: UUID
+    text: str = Field(..., min_length=1, max_length=10000)
+    stored_at: dt.datetime
+    salience: float = Field(default=1.0, ge=0.3, le=2.5)
+    meta: dict = Field(default_factory=dict)
+
+# In de main loop:
+try:
+    payload = json.loads(msg.value().decode("utf-8"))
+    anchor = Anchor.model_validate(payload) # Automatische validatie
+    # ...
+except ValidationError as e:
+    # Handel validatiefouten af
+    # ...
 ```
 
-**Usage:**
-```python
-# In main():
-is_valid, errors = validate_anchor(payload)
-if not is_valid:
-    error_msg = {
-        "anchor_id": payload.get("anchor_id"),
-        "ok": False,
-        "reason": "validation_failed",
-        "errors": errors
-    }
-    producer.produce(TOP_OUT, json.dumps(error_msg).encode("utf-8"))
-    producer.flush()
-    print(f"[indexer] Validation failed: {errors}", file=sys.stderr)
-    continue
-```
+Deze aanpak vervangt de noodzaak voor een aparte `validate_anchor` functie en biedt een sterkere garantie voor datakwaliteit.
 
 ### 4. Batch Processing (Priority: MEDIUM)
 
@@ -466,66 +430,24 @@ embedding = get_cached_embedding(text)
 
 ## Implementatie Volgorde
 
-### Fase 1: Test Infrastructure (Week 1)
+### Fase 1: Test Infrastructure (Week 1) - ✅ COMPLETED
 
-**Waarom eerst tests?**
-- Indexer is relatief simpel, maar kritiek voor data integrity
-- Immutability check moet goed getest worden
-- Collection management heeft edge cases
-- Tests maken refactoring veiliger
+**Status:** De testinfrastructuur is volledig opgezet. Unit en integratietests zijn geschreven voor de bestaande functionaliteit en de code is gerefactored om testbaarheid te verbeteren. De test-suite draait succesvol.
 
-**Wat we maken:**
+**Wat we hebben gemaakt:**
 
-1. **Unit Tests** (`tests/workers/indexer/test_indexer_units.py`):
-   - `test_anchor_exists()` - verschillende scenarios
-   - `test_ensure_collection()` - dimension mismatches
-   - `test_validate_anchor()` - verschillende invalid inputs
-   - `test_preprocess_text()` - text normalization
-
-2. **Integration Tests** (`tests/workers/indexer/test_indexer_integration.py`):
-   - Mock Qdrant client
-   - Mock Kafka consumer/producer
-   - Test volledige flow: anchor → Qdrant
-   - Test immutability enforcement
-   - Test collection recreation
-
-3. **Test Data Fixtures** (`tests/fixtures/indexer_anchors.json`):
-   - Valid anchors
-   - Invalid anchors (voor validation tests)
-   - Anchors met verschillende metadata
-
-**Test Locatie:**
-```
-convai_narrative_memory_poc/
-├── tests/
-│   ├── __init__.py
-│   ├── fixtures/
-│   │   └── indexer_anchors.json
-│   └── workers/
-│       ├── __init__.py
-│       └── indexer/
-│           ├── __init__.py
-│           ├── test_indexer_units.py
-│           └── test_indexer_integration.py
-```
+1.  **Unit Tests** (`tests/workers/indexer/test_indexer_units.py`):
+    - Tests voor `process_anchor`, `ensure_collection`, en `anchor_exists`.
+2.  **Integration Tests** (`tests/workers/indexer/test_indexer_integration.py`):
+    - Tests voor de volledige `process_anchor` flow met gemockte dependencies.
+3.  **Test Data Fixtures** (`tests/conftest.py`):
+    - Gedeelde fixtures voor Qdrant, Kafka, en Pydantic modellen.
 
 ---
 
-### Fase 2: Input Validation (Week 2)
+### Fase 2: Input Validation (Week 2) - ✅ COMPLETED
 
-**Stap 2.1: Validation Function**
-- Implement `validate_anchor()` function
-- Test alle edge cases
-- Error messages moeten duidelijk zijn
-
-**Stap 2.2: Integration**
-- Valideer voordat processing
-- Publish validation errors naar `anchors-indexed`
-- Logging voor debugging
-
-**Stap 2.3: Testing**
-- Test met verschillende invalid inputs
-- Test backward compatibility (oude anchors zonder validatie)
+**Status:** Input validatie is geïmplementeerd met Pydantic, wat de oorspronkelijke planning overtreft in robuustheid. De `main` loop vangt `ValidationError` exceptions af en rapporteert deze.
 
 ---
 
@@ -697,8 +619,7 @@ def test_full_anchor_lifecycle():
 convai_narrative_memory_poc/
 ├── workers/
 │   └── indexer/
-│       ├── main.py                    # Huidige implementatie
-│       ├── validation.py             # NIEUW: Input validation
+│       ├── main.py                    # Huidige implementatie met Pydantic model
 │       ├── emotion.py                # NIEUW: Emotion detection
 │       ├── salience.py               # NIEUW: Salience calculation
 │       ├── preprocessing.py           # NIEUW: Text preprocessing
@@ -720,13 +641,13 @@ convai_narrative_memory_poc/
 ## Success Criteria
 
 ### Fase 1 (Tests):
-- ✅ >80% code coverage voor indexer
+- ✅ >80% code coverage voor indexer (behaald, gecheckt met `pytest-cov`)
 - ✅ Alle edge cases hebben tests
 - ✅ Tests kunnen draaien zonder Docker/Kafka (mocked)
 
 ### Fase 2 (Validation):
-- ✅ Invalid anchors worden afgewezen
-- ✅ Error messages zijn duidelijk
+- ✅ Invalid anchors worden afgewezen (afgehandeld door Pydantic)
+- ✅ Error messages zijn duidelijk (Pydantic `ValidationError`)
 - ✅ Backward compatible
 
 ### Fase 3 (Emotion):
